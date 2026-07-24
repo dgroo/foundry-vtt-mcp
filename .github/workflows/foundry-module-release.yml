@@ -1,24 +1,69 @@
-name: Build & Release Foundry Module
+name: Build & Release Foundry Module (iDM fork)
+
+# Release loop for the iDM fork: bump `version` in
+# packages/foundry-module/module.json and push to master. This workflow
+# builds the module (upstream's version forgot to), packages a zip whose
+# module.json version MATCHES the manifest (the skew that dead-ended the
+# write path — iDM dev-inbox 0061), and cuts release `foundry-module-v<version>`.
+# Foundry then shows a one-click "Update" in Manage Modules. A push that does
+# not bump the version is a no-op (the release already exists), so there is no
+# release spam.
+
 on:
-  workflow_dispatch:
   push:
-    tags: [ "foundry-module-v*" ]
+    branches: [master]
+    paths: ['packages/foundry-module/**']
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-        with: { fetch-depth: 0 }
+      - uses: actions/checkout@v4
 
-      - name: Create module zip
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Read module version
+        id: ver
+        run: echo "version=$(node -p "require('./packages/foundry-module/module.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this version was already released
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          if gh release view "foundry-module-v${VERSION}" >/dev/null 2>&1; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+            echo "::notice::Release foundry-module-v${VERSION} already exists — bump module.json version to cut a new one."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install and build
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          npm ci
+          npm run build -w @foundry-mcp/module
+
+      - name: Package (matched zip — module.json + built dist/)
+        if: steps.check.outputs.exists == 'false'
         run: |
           cd packages/foundry-module
-          zip -r ../../foundry-vtt-mcp.zip . -x ".*" -x "node_modules/*"
+          test -f dist/main.js || { echo "dist/main.js missing after build"; exit 1; }
+          zip -rq ../../foundry-vtt-mcp.zip . -x '.*' -x 'node_modules/*'
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          files: foundry-vtt-mcp.zip
-          generate_release_notes: true
+      - name: Create release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          gh release create "foundry-module-v${VERSION}" foundry-vtt-mcp.zip \
+            --title "Foundry MCP Bridge (iDM) v${VERSION}" \
+            --notes "Automated matched release: manifest version == packaged zip version, built dist/ included. Update in Foundry via Manage Modules."
