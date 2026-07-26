@@ -53,6 +53,45 @@ export class QuestCreationTools {
   getToolDefinitions() {
     return [
       {
+        name: 'create-journal-entry',
+        description:
+          'Create a JournalEntry from content you supply verbatim. Nothing is generated, templated, or rewritten — the HTML you pass is the HTML Foundry stores.\n\n' +
+          'Use this for faithful text: published adventure prose, session handouts, lore imported from elsewhere. Use create-quest-journal instead only when you WANT the quest template applied (it renders a D&D-5e-flavored layout from structured fields and ignores prose you pass it).\n\n' +
+          'Content is HTML, not Markdown — Foundry v13+ ProseMirror strips Markdown to plain text. Useful classes: <h2 class="spaced">Section</h2>, <div class="gmnote"><p>GM-only</p></div>, <div class="readaloud"><p>Player-facing</p></div>.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: 'Journal entry title as it appears in the sidebar',
+            },
+            content: {
+              type: 'string',
+              description: 'HTML for the first page, stored verbatim',
+            },
+            additionalPages: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', description: 'Page name (e.g. "GM Notes")' },
+                  content: { type: 'string', description: 'HTML for this page, stored verbatim' },
+                },
+                required: ['name', 'content'],
+              },
+              description:
+                'Optional further pages, each stored verbatim. Use for multi-page handouts.',
+            },
+            folderName: {
+              type: 'string',
+              description:
+                'Optional sidebar folder to file the journal under; created if it does not exist.',
+            },
+          },
+          required: ['name', 'content'],
+        },
+      },
+      {
         name: 'create-quest-journal',
         description:
           'Create a new quest journal entry with AI-generated content based on natural language description',
@@ -240,6 +279,56 @@ export class QuestCreationTools {
   /**
    * Handle create quest journal request
    */
+  /**
+   * Create a JournalEntry from caller-supplied content, verbatim.
+   *
+   * The Foundry-side `createJournalEntry` query has always been generic —
+   * name + content + pages, no system assumptions. `create-quest-journal`
+   * is a thin wrapper that overwrites `content` with `generateQuestContent()`,
+   * a local D&D-5e template, so prose passed to it is silently discarded.
+   * This exposes the underlying query directly for faithful text.
+   */
+  async handleCreateJournalEntry(args: any): Promise<any> {
+    try {
+      const requestSchema = z.object({
+        name: z.string().min(1, 'Journal name is required'),
+        content: z.string().min(1, 'Journal content is required'),
+        additionalPages: z
+          .array(
+            z.object({
+              name: z.string().min(1),
+              content: z.string().min(1),
+            })
+          )
+          .optional(),
+        folderName: z.string().optional(),
+      });
+
+      const request = requestSchema.parse(args);
+
+      const result = await this.foundryClient.query('foundry-mcp-bridge.createJournalEntry', {
+        name: request.name,
+        content: request.content,
+        ...(request.additionalPages ? { additionalPages: request.additionalPages } : {}),
+        ...(request.folderName ? { folderName: request.folderName } : {}),
+      });
+
+      if (!result || result.error) {
+        throw new Error(result?.error || 'Failed to create journal entry');
+      }
+
+      return {
+        success: true,
+        journalId: result.id,
+        journalName: result.name,
+        pageCount: result.pageCount || 1,
+        message: `Journal "${request.name}" created with ${result.pageCount || 1} page(s)`,
+      };
+    } catch (error) {
+      this.errorHandler.handleToolError(error, 'create-journal-entry', 'journal creation');
+    }
+  }
+
   async handleCreateQuestJournal(args: any): Promise<any> {
     try {
       // Validate arguments

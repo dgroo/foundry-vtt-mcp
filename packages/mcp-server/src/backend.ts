@@ -1635,6 +1635,11 @@ async function startBackend(): Promise<void> {
 
                 // Quest creation tools
 
+                case 'create-journal-entry':
+                  result = await questCreationTools.handleCreateJournalEntry(args);
+
+                  break;
+
                 case 'create-quest-journal':
                   result = await questCreationTools.handleCreateQuestJournal(args);
 
